@@ -20,6 +20,10 @@
 
 #define							TFMINI_FRAME_SIZE				7
 
+#define							ALTITUDE_PID_SAMPLE_T		15
+#define							X_PID_SAMPLE_T					50
+#define							Y_PID_SAMPLE_T					50
+
 
 
 

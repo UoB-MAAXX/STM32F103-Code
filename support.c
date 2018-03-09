@@ -192,135 +192,22 @@ int32_t constrain(int32_t x, int32_t min, int32_t max)
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
 //##################################################################################################################
-uint16_t slew_limiter(uint16_t datum)
-{
-#define		ALLOWED_CHANGE		50
-	
-	static uint16_t Previous_Value;
-	
-	int16_t Value_Difference = datum - Previous_Value;	
-	
-	Previous_Value += constrain(Value_Difference, -ALLOWED_CHANGE, ALLOWED_CHANGE);
-	
-	return(Previous_Value);	
-}
-
-//##################################################################################################################
-//------------------------------------------------------------------------------------------------------------------
-//##################################################################################################################
-int16_t PID_Output_average(int16_t Value)
-{
-#define		FILTER_SIZE		10
-	
-	static int16_t Buffer[FILTER_SIZE];
-	static int16_t Index = 0;
-	
-  Buffer[Index] = Value;                                
-  Index++;
+int16_t Average(average_filter * Avg, int16_t datum)
+{	
+  Avg->Buffer[Avg->Index] = datum;                                
+  Avg->Index++;
     
-  if(Index == FILTER_SIZE)                                    
-    Index = 0;
+  if(Avg->Index == Avg->Filter_Size)                                    
+    Avg->Index = 0;
   
   int32_t sum = 0;
-  for(int i = 0; i < FILTER_SIZE; i++)
-    sum += Buffer[i];
+  for(int8_t i = 0; i < Avg->Filter_Size; i++)
+    sum += Avg->Buffer[i];
 
-  return(sum/FILTER_SIZE);
+  return(sum/Avg->Filter_Size);
 }
 
-//##################################################################################################################
-//------------------------------------------------------------------------------------------------------------------
-//##################################################################################################################
-uint16_t median_filter(uint16_t datum)
-{
- struct pair
- {
-   struct pair   *point;                              /* Pointers forming list linked in sorted order */
-   uint16_t  value;                                   /* Values to sort */
- };
- static struct pair buffer[MEDIAN_FILTER_SIZE] = {0}; /* Buffer of nwidth pairs */
- static struct pair *datpoint = buffer;               /* Pointer into circular buffer of data */
- static struct pair small = {0, STOPPER};          		/* Chain stopper */
- static struct pair big = {&small, 0};                /* Pointer to head (largest) of linked list.*/
 
- struct pair *successor;                              /* Pointer to successor of replaced data item */
- struct pair *scan;                                   /* Pointer used to scan down the sorted list */
- struct pair *scanold;                                /* Previous value of scan */
- struct pair *median;                                 /* Pointer to median */
- uint16_t i;
-
- if (datum == STOPPER)
- {
-   datum = STOPPER + 1;                             /* No stoppers allowed. */
- }
-
- if ( (++datpoint - buffer) >= MEDIAN_FILTER_SIZE)
- {
-   datpoint = buffer;                               /* Increment and wrap data in pointer.*/
- }
-
- datpoint->value = datum;                           /* Copy in new datum */
- successor = datpoint->point;                       /* Save pointer to old value's successor */
- median = &big;                                     /* Median initially to first in chain */
- scanold = 0;                                    		/* Scanold initially null. */
- scan = &big;                                       /* Points to pointer to first (largest) datum in chain */
-
- /* Handle chain-out of first item in chain as special case */
- if (scan->point == datpoint)
- {
-   scan->point = successor;
- }
- scanold = scan;                                     /* Save this pointer and   */
- scan = scan->point ;                                /* step down chain */
-
- /* Loop through the chain, normal loop exit via break. */
- for (i = 0 ; i < MEDIAN_FILTER_SIZE; ++i)
- {
-   /* Handle odd-numbered item in chain  */
-   if (scan->point == datpoint)
-   {
-     scan->point = successor;                      /* Chain out the old datum.*/
-   }
-
-   if (scan->value < datum)                        /* If datum is larger than scanned value,*/
-   {
-     datpoint->point = scanold->point;             /* Chain it in here.  */
-     scanold->point = datpoint;                    /* Mark it chained in. */
-     datum = STOPPER;
-   };
-
-   /* Step median pointer down chain after doing odd-numbered element */
-   median = median->point;                       /* Step median pointer.  */
-   if (scan == &small)
-   {
-     break;                                      /* Break at end of chain  */
-   }
-   scanold = scan;                               /* Save this pointer and   */
-   scan = scan->point;                           /* step down chain */
-
-   /* Handle even-numbered item in chain.  */
-   if (scan->point == datpoint)
-   {
-     scan->point = successor;
-   }
-
-   if (scan->value < datum)
-   {
-     datpoint->point = scanold->point;
-     scanold->point = datpoint;
-     datum = STOPPER;
-   }
-
-   if (scan == &small)
-   {
-     break;
-   }
-
-   scanold = scan;
-   scan = scan->point;
- }
- return median->value;
-}
 
 
 

@@ -8,6 +8,14 @@
 #define 						STOPPER 													0                                      /* Smaller than any datum */
 #define    					MEDIAN_FILTER_SIZE    						5
 
+typedef struct average_filter
+{
+	int16_t Buffer[32];
+	int8_t  Index; 
+  int8_t  Filter_Size;
+} average_filter;
+
+
 extern volatile uint16_t PPM_In[PPM_CHANNELS];
 extern volatile uint16_t PPM_Out[PPM_CHANNELS];
 
@@ -16,9 +24,7 @@ void ppm_init(void);
 void TIM3_Init(void);
 
 int32_t constrain(int32_t x, int32_t min, int32_t max);
-uint16_t slew_limiter(uint16_t datum);
-int16_t PID_Output_average(int16_t datum);
-uint16_t median_filter(uint16_t datum);
+int16_t Average(average_filter * Avg, int16_t datum);
 
 #endif
 

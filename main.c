@@ -28,12 +28,8 @@
  * - Rx/Tx Telementry
  * - Rx from RPi3
  * 
- * Currently working on:
- * - Getting the quad to hold its own altitude using its sonar readings. 
- *
- * 
  * To Do:
- *  - TEST, TEST, TEST!!!
+ *  - Make average filter use a struct and pass a pointer etc - TEST THIS!
  *
  *
  *  - Position_Hold mode in the Pass_through task
@@ -57,22 +53,15 @@
 #include "string.h"
 #include "stdio.h"
 
-PIDParams SonarPID;
-
-i2c_integral_frame iframe;
+PIDParams 							Altitude_PID, X_PID, Y_PID;
+average_filter					Altitude_Avg, X_Avg, Y_Avg;
+i2c_integral_frame 			Px4Flow_iframe;
 
 volatile uint16_t PPM_In[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};
 volatile uint16_t PPM_Out[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};
 
-volatile uint8_t MODE = MANUAL_CTRL;
-
-volatile int16_t constained_ground_distance;
-volatile int16_t median_filtered_ground_distance;
-volatile int16_t slew_limited_ground_distance;
-
-volatile int16_t Filtered_PID_Output;
-
-volatile int16_t LIDAR_ground_distance, LIDAR_signal_strength;
+volatile int16_t Altitude_PID_Output_Avg, X_PID_Output_Avg, Y_PID_Output_Avg;
+volatile int16_t constained_ground_distance, LIDAR_ground_distance, LIDAR_signal_strength;
 
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
@@ -101,10 +90,10 @@ void Task_Read_LIDAR(void *argument)
 				uint8_t curChar = UART_getc(UART3);
 
 				if ((lastChar == 0x59) && (curChar == 0x59)) {       
-					break; 																																																			// Break to begin frame
+					break; 																																																		// Break to begin frame
 				}        
 				else {                 
-					lastChar = curChar;																																													// Not seen two 0x59's in a row yet 
+					lastChar = curChar;																																												// Not seen two 0x59's in a row yet 
 				}	
 			}
 			
@@ -126,8 +115,11 @@ void Task_Read_LIDAR(void *argument)
 		uint16_t distance = (frame[1] << 8) + frame[0];
 		uint16_t strength = (frame[3] << 8) + frame[2];  
 		
-		LIDAR_ground_distance = distance;
-		LIDAR_signal_strength = strength;	
+		LIDAR_ground_distance = distance * 10;
+		LIDAR_signal_strength = strength;
+		
+		constained_ground_distance = constrain(LIDAR_ground_distance, 300, 1500);
+		Altitude_PID.Input = (float)constained_ground_distance;
 		osDelay(5);			
 	}
 }	
@@ -137,16 +129,11 @@ void Task_Read_LIDAR(void *argument)
 //##################################################################################################################
 void Task_Read_Px4Flow(void *argument) 
 { 
-	// This Task reads from the Px4Flow over I2C and updates the iframe struct with the infomation
+	// This Task reads from the Px4Flow over I2C and updates the Px4Flow_iframe struct with the infomation
 	while(1) 
 	{	
 		osDelay(50);	
-		update_integral(&iframe);
-
-		constained_ground_distance = constrain(iframe.ground_distance, 300, 2000);															
-		median_filtered_ground_distance = median_filter(constained_ground_distance);
-		slew_limited_ground_distance = slew_limiter(median_filtered_ground_distance);	
-		SonarPID.Input = (float)slew_limited_ground_distance;
+		update_integral(&Px4Flow_iframe);
 	}
 }
 
@@ -171,7 +158,7 @@ void Task_Alive_LED(void *argument)
 //##################################################################################################################
 void Task_Ctrl_Mode(void *argument) 
 { 
-	// This task sets the MODE (MANUAL / ALT_HOLD / ALT_HOLD) based on the postion of a 3-position switch on the Tx. (ANOTHER MODE TO BE ADDED)
+	// This task sets the mode (MANUAL / ALT_HOLD / ALT_HOLD) based on the postion of a 3-position switch on the Tx. 
 
 	while(1) 
 	{
@@ -179,14 +166,22 @@ void Task_Ctrl_Mode(void *argument)
 		
 		if(PPM_In[MODE_CH] < 1250)			
 		{
-			MODE = MANUAL_CTRL;
-			SetMode(&SonarPID, MANUAL);
+			SetMode(&Altitude_PID, MANUAL);
+			SetMode(&X_PID, MANUAL);
+			SetMode(&Y_PID, MANUAL);
 		}
+		else if(PPM_In[MODE_CH] < 1750) 
+		{
+			SetMode(&Altitude_PID, AUTOMATIC);
+			SetMode(&X_PID, MANUAL);
+			SetMode(&Y_PID, MANUAL);
+		}		
 		else
 		{
-			MODE = ALT_HOLD_CTRL;
-			SetMode(&SonarPID, AUTOMATIC);
-		}		
+			SetMode(&Altitude_PID, AUTOMATIC);
+			SetMode(&X_PID, AUTOMATIC);
+			SetMode(&Y_PID, AUTOMATIC);			
+		}
 	}
 }
 
@@ -207,12 +202,13 @@ void Task_Telemetry(void *argument)
 		UART_flush_TX(UART1);
 		   
 		// ------------------- Transmit info for debugging purposes:
-		UART_putnum((int32_t)SonarPID.Input, UART1); 							UART_putstr(",", UART1);															// Print PID Input 1st ie. filtered ultrasound readings
-		UART_putnum(LIDAR_ground_distance, UART1); 								UART_putstr(",", UART1);
-//	UART_putnum((int32_t)SonarPID.Setpoint); 									UART_putstr(",");																			// Print setpoint height 2nd
-//	UART_putnum((int32_t)SonarPID.Output); 						  			UART_putstr(",");
-	  UART_putnumln(Filtered_PID_Output, UART1); 						  		
-//	UART_putnum(iframe.pixel_flow_x_integral, UART1);
+		UART_putnum((int32_t)Altitude_PID.Input, UART1); 							UART_putstr(",", UART1);												
+//  UART_putnum(Px4Flow_iframe.sonar_ground_distance, UART1); 		UART_putstr(",", UART1);
+//	UART_putnum((int32_t)Altitude_PID.Setpoint); 									UART_putstr(",", UART1);															
+//	UART_putnum((int32_t)Altitude_PID.Output); 						  			UART_putstr(",", UART1);
+//  UART_putnum(Altitude_PID_Output_Avg, UART1); 									UART_putstr(",", UART1);	  		
+		UART_putnum(Px4Flow_iframe.pixel_flow_x_integral, UART1);			UART_putstr(",", UART1);
+		UART_putnumln(Px4Flow_iframe.pixel_flow_y_integral, UART1);
 		
 		// ------------------- Receive info for PID tuning etc:
 		if(UART_available(UART1))																																														
@@ -223,23 +219,23 @@ void Task_Telemetry(void *argument)
 			switch(Buffer[0])																																															// Format:    p45
 			{				
 				case 'p':
-					SetTunings(&SonarPID, fvalue, SonarPID.dispKi, SonarPID.dispKd, P_ON_E);	
+					SetTunings(&Altitude_PID, fvalue, Altitude_PID.dispKi, Altitude_PID.dispKd, P_ON_E);	
 					UART_putstr("New P: ", UART1);
 					break;
 				
 				case 'i':
-					SetTunings(&SonarPID, SonarPID.dispKp, fvalue, SonarPID.dispKd, P_ON_E);
+					SetTunings(&Altitude_PID, Altitude_PID.dispKp, fvalue, Altitude_PID.dispKd, P_ON_E);
 					UART_putstr("New I: ", UART1);
 					break;
 				
 				case 'd':
-					SetTunings(&SonarPID, SonarPID.dispKp, SonarPID.dispKi, fvalue, P_ON_E);
+					SetTunings(&Altitude_PID, Altitude_PID.dispKp, Altitude_PID.dispKi, fvalue, P_ON_E);
 					UART_putstr("New D: ", UART1);
 					break;
 				
 				case 's':
-					SonarPID.Setpoint = fvalue * 1000.0;
-					UART_putstr("New S: ", UART1); UART_putnumln((int32_t)SonarPID.Setpoint, UART1);
+					Altitude_PID.Setpoint = fvalue * 1000.0;
+					UART_putstr("New S: ", UART1); UART_putnumln((int32_t)Altitude_PID.Setpoint, UART1);
 					break;
 
 				default:
@@ -247,10 +243,10 @@ void Task_Telemetry(void *argument)
 					break;
 			}
 			
-			UART_putstr(" P:", UART1); UART_putnum((int32_t)(SonarPID.dispKp * 1000.0), UART1); 
-			UART_putstr(" I:", UART1); UART_putnum((int32_t)(SonarPID.dispKi * 1000.0), UART1); 
-			UART_putstr(" D:", UART1); UART_putnum((int32_t)(SonarPID.dispKd * 1000.0), UART1); 
-			UART_putstr(" S:", UART1); UART_putnumln((int32_t)SonarPID.Setpoint, UART1);
+			UART_putstr(" P:", UART1); UART_putnum((int32_t)(Altitude_PID.dispKp * 1000.0), UART1); 
+			UART_putstr(" I:", UART1); UART_putnum((int32_t)(Altitude_PID.dispKi * 1000.0), UART1); 
+			UART_putstr(" D:", UART1); UART_putnum((int32_t)(Altitude_PID.dispKd * 1000.0), UART1); 
+			UART_putstr(" S:", UART1); UART_putnumln((int32_t)Altitude_PID.Setpoint, UART1);
 			
 			osDelay(1000);
 			UART_flush_RX(UART1);
@@ -264,17 +260,29 @@ void Task_Telemetry(void *argument)
 void Task_PID(void *argument) 
 {		
 	// This task runs frequently. It configures PIDs and adjusts setpoints. -> This could be moved and the while loop done as a periodic fnx
-	PID(&SonarPID, 0.020, 0.004, 0.040, P_ON_E, DIRECT);
-	SetSampleTime(&SonarPID, 55);
-	SetOutputLimits(&SonarPID, -150.0, 150.0);
-	SonarPID.Setpoint = 600.0;																																												// Default setpoint (mm)
-		
+	PID(&Altitude_PID, 0.020, 0.004, 0.040, P_ON_E, DIRECT);
+	SetSampleTime(&Altitude_PID, ALTITUDE_PID_SAMPLE_T);
+	SetOutputLimits(&Altitude_PID, -150.0, 150.0);
+	Altitude_PID.Setpoint = 800.0;																																										// Default setpoint (mm)
+
+	PID(&X_PID, 0.010, 0.000, 0.020, P_ON_E, DIRECT);
+	SetSampleTime(&X_PID, X_PID_SAMPLE_T);
+	SetOutputLimits(&X_PID, -50.0, 50.0);
+	X_PID.Setpoint = 0.0;
+	
+	PID(&Y_PID, 0.010, 0.000, 0.020, P_ON_E, DIRECT);
+	SetSampleTime(&Y_PID, Y_PID_SAMPLE_T);
+	SetOutputLimits(&Y_PID, -50.0, 50.0);
+	Y_PID.Setpoint = 0.0;
+	
 	while(1) 
 	{		
 		osDelay(100);
 		
 		if(PPM_In[THROTTLE_CH] < 1100)	{																																								// Avoid PID windup if we're sat on the floor
-			SonarPID.outputSum = 0;
+			Altitude_PID.outputSum = 0;
+			X_PID.outputSum = 0;
+			Y_PID.outputSum = 0;
 		}																		
 	}
 }
@@ -289,9 +297,9 @@ void Task_Pass_Through(void *argument)
 	{
 		osDelay(5);			
 
-		PPM_Out[ROLL_CH] 			= PPM_In[ROLL_CH];
-		PPM_Out[PITCH_CH] 		= PPM_In[PITCH_CH];																	
-		PPM_Out[THROTTLE_CH] 	= PPM_In[THROTTLE_CH] + Filtered_PID_Output;																								
+		PPM_Out[ROLL_CH] 			= PPM_In[ROLL_CH]; 			// + X_PID_Output_Avg
+		PPM_Out[PITCH_CH] 		= PPM_In[PITCH_CH];			// + Y_PID_Output_Avg															
+		PPM_Out[THROTTLE_CH] 	= PPM_In[THROTTLE_CH] + Altitude_PID_Output_Avg;																								
 		PPM_Out[YAW_CH] 			= PPM_In[YAW_CH];			
 		PPM_Out[ARM_CH] 			= PPM_In[ARM_CH];
 		PPM_Out[MODE_CH] 			= PPM_In[MODE_CH];
@@ -306,10 +314,28 @@ void Task_Pass_Through(void *argument)
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //------------------------------------------------------------------------------------------------------------------
 //##################################################################################################################
-static void Periodic_Sonar_PID (void *argument) 
+static void Periodic_Altitude_PID (void *argument) 
 {	
-	Compute(&SonarPID);
-	Filtered_PID_Output = PID_Output_average((int16_t)SonarPID.Output);
+	Compute(&Altitude_PID);
+	Altitude_PID_Output_Avg = Average(&Altitude_Avg, (int16_t)Altitude_PID.Output);
+}
+
+//##################################################################################################################
+//------------------------------------------------------------------------------------------------------------------
+//##################################################################################################################
+static void Periodic_X_PID (void *argument) 
+{	
+	Compute(&X_PID);
+	X_PID_Output_Avg = Average(&X_Avg, (int16_t)X_PID.Output);
+}
+
+//##################################################################################################################
+//------------------------------------------------------------------------------------------------------------------
+//##################################################################################################################
+static void Periodic_Y_PID (void *argument) 
+{	
+	Compute(&Y_PID);
+	Y_PID_Output_Avg = Average(&Y_Avg, (int16_t)Y_PID.Output);
 }
 
 //##################################################################################################################
@@ -329,9 +355,16 @@ void app_main (void *argument)
 	osThreadNew(Task_PID, 					NULL, NULL);
 
 	// Start periodic timers to handle the PIDs for Altitude hold, etc
-	osTimerId_t Periodic_Sonar_PID_id;
-	Periodic_Sonar_PID_id = osTimerNew(Periodic_Sonar_PID, osTimerPeriodic, NULL, NULL);
-	osTimerStart(Periodic_Sonar_PID_id, 55);	
+	osTimerId_t Periodic_Altitude_PID_id, Periodic_X_PID_id, Periodic_Y_PID_id;
+	
+	Periodic_Altitude_PID_id = osTimerNew(Periodic_Altitude_PID, osTimerPeriodic, NULL, NULL);
+	osTimerStart(Periodic_Altitude_PID_id, ALTITUDE_PID_SAMPLE_T);		
+
+//	Periodic_X_PID_id = osTimerNew(Periodic_X_PID, osTimerPeriodic, NULL, NULL);
+//	osTimerStart(Periodic_X_PID_id, X_PID_SAMPLE_T);	
+
+//	Periodic_Y_PID_id = osTimerNew(Periodic_Y_PID, osTimerPeriodic, NULL, NULL);
+//	osTimerStart(Periodic_Y_PID_id, Y_PID_SAMPLE_T);		
 	
 	// This forms the idle task
 	osDelay(osWaitForever);
@@ -351,12 +384,19 @@ int main(void)
 	USART3_Init();																				// Initialises UART3 functions, FIFO & interrupts for comms with TFmini Lidar module
 	I2C_Init_fnc();																				// Initialises I2C functions, FIFO & interrupts
 
+	// Initialise variables
+	Altitude_Avg.Filter_Size = 20;
+	X_Avg.Filter_Size = 10;
+	Y_Avg.Filter_Size = 10;
+	
 	// OS System Initialization
 	SystemCoreClockUpdate();
 	
 	osKernelInitialize(); 																// Initialize CMSIS-RTOS		 
 	osThreadNew(app_main, NULL, NULL); 										// Create application main thread
 	osKernelStart(); 																			// Start thread execution
+	
+	osDelay(osWaitForever);
 	while(1) {}		
 }
 

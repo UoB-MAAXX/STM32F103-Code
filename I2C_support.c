@@ -153,7 +153,7 @@ void update_integral(i2c_integral_frame * iframe)
 	iframe->gyro_z_rate_integral   					= read16();
 	iframe->integration_timespan   					= read32();
 	iframe->sonar_timestamp        					= read32();
-	iframe->ground_distance        					= read16();
+	iframe->sonar_ground_distance  					= read16();
 	iframe->gyro_temperature       					= read16();
 	iframe->quality                					= read8();	
 
