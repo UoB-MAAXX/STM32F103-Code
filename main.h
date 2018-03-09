@@ -18,7 +18,9 @@
 #define           	ALT_HOLD_CTRL          	1
 #define           	POS_HOLD_CTRL          	2
 
-#define							THROTTLE_UPPER_LIMIT		1800
+#define							TFMINI_FRAME_SIZE				7
+
+
 
 
 #endif

@@ -1,7 +1,7 @@
 #ifndef _I2C_SUPPORT_H_
 #define _I2C_SUPPORT_H_
 
-#define 						I2C_CLK_SPEED          						50000
+#define 						I2C_CLK_SPEED          						200000
 #define 						PXFLOW_I2C_ADR     								0x42			// 100_0010
 
 typedef struct i2c_integral_frame

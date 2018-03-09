@@ -7,17 +7,22 @@
 
 #define							UART_RX_STR_TIMEOUT								50
 
+#define							UART1															0
+#define							UART2															1
+#define							UART3															2
+
 void USART1_Init(void);
-uint8_t UART_putc(char character);
-char UART_getc(void);
-void UART_flush_TX(void);
-void UART_flush_RX(void);
-uint8_t UART_available(void);
-void UART_putstr(char * str);	
-void UART_putstrln(char * str);
-uint8_t UART_getstr(char * str, char stop_char);
-void UART_putnum(int32_t x);
-void UART_putnumln(int32_t x);
+void USART3_Init(void);
+uint8_t UART_putc(char character, int8_t UARTx);
+char UART_getc(int8_t UARTx);
+void UART_flush_TX(int8_t UARTx);
+void UART_flush_RX(int8_t UARTx);
+uint8_t UART_available(int8_t UARTx);
+void UART_putstr(char * str, int8_t UARTx);	
+void UART_putstrln(char * str, int8_t UARTx);
+uint8_t UART_getstr(char * str, char stop_char, int8_t UARTx);
+void UART_putnum(int32_t x, int8_t UARTx);
+void UART_putnumln(int32_t x, int8_t UARTx);
 
 int32_t stoi(char* s);
 
