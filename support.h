@@ -20,6 +20,7 @@ extern volatile uint16_t PPM_In[PPM_CHANNELS];
 extern volatile uint16_t PPM_Out[PPM_CHANNELS];
 
 void gpio_init(void);
+void ADC_init(void);
 void ppm_init(void);
 void TIM3_Init(void);
 

@@ -23,7 +23,7 @@
 #define							ALTITUDE_PID_SAMPLE_T		15
 #define							X_PID_SAMPLE_T					50
 #define							Y_PID_SAMPLE_T					50
-
+#define							CHARGE_SAMPLE_T					200
 
 
 

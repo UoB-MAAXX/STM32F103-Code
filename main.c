@@ -11,10 +11,8 @@
  * - To reach a postion setpoint - Not implemented yet!
  * 
  * 
- * We move the position setpoint around in order to get the quad to follow this setpoint route. 
+ * We use the px4Flow to measure a velocity vector. We take data from the pi and modifiy the setpoint velocity vector. PIDs 
  * 
- * We can initially just have the setpoint moving around the track blind. We can then introduce some correction info from the Pi. Eg setting X or Y
- * based on visual info.
  * 
  * 
  * Aside from this regular serial transmissions are made to send data over telementry. 
@@ -29,16 +27,15 @@
  * - Rx from RPi3
  * 
  * To Do:
- *  - Make average filter use a struct and pass a pointer etc - TEST THIS!
- *
- *
- *  - Position_Hold mode in the Pass_through task
- *  - Tune X & Y PIDs for position hold mode.
- *  - In the PID_Task, allow for position setpoint adjustment based on a map of position coordinates to work through. Slow sections have higher density of coords etc  
-
+ *  - Reduce stick sensitivity in betaflight
+ *  - TEST X_PID_Output_Avg PID outputs etc and moving from alt_hold to full auto mode in the air. Engage the PIDs in the pass through routine
+ *  - Tune X & Y PIDs for velocity hold mode
  *  - Get UART from Pi working.
- *  - Allow Pi to send X,Y,Yaw corrections
- *  - Allow for Yaw correction
+ *  - Allow Pi to send X,Y corrections
+ *
+ *
+ *	Hardware:
+ *  - Add LED downlighting for shorter camera exposure times and less motion blur
  *  
  */
  
@@ -53,15 +50,20 @@
 #include "string.h"
 #include "stdio.h"
 
-PIDParams 							Altitude_PID, X_PID, Y_PID;
-average_filter					Altitude_Avg, X_Avg, Y_Avg;
-i2c_integral_frame 			Px4Flow_iframe;
+PIDParams 							Altitude_PID, X_PID, Y_PID;																																	// Our PID structures
+average_filter					Altitude_Avg, X_Avg, Y_Avg, V_Avg, I_Avg;																										// Our average filter structures
+i2c_integral_frame 			Px4Flow_iframe;																																							// Structure copied from Px4Flow containing flow data etc
 
-volatile uint16_t PPM_In[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};
-volatile uint16_t PPM_Out[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};
+volatile uint16_t PPM_In[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};													// These are updated with fresh values from the Rx
+volatile uint16_t PPM_Out[PPM_CHANNELS] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1000};													// These values get output to the FC
 
-volatile int16_t Altitude_PID_Output_Avg, X_PID_Output_Avg, Y_PID_Output_Avg;
-volatile int16_t constained_ground_distance, LIDAR_ground_distance, LIDAR_signal_strength;
+volatile int16_t Altitude_PID_Output_Avg, X_PID_Output_Avg, Y_PID_Output_Avg;																				// These hold averages of our PID outputs
+
+volatile uint16_t LIDAR_ground_distance, LIDAR_signal_strength;																											
+volatile uint16_t Current, Voltage;																																									// mA and mV
+volatile float    Charge = 0;																																												// mAh accumulated since power on
+
+volatile int32_t X_Position = 0, X_Velocity, X_Setpoint = 0, Y_Position = 0, Y_Velocity, Y_Setpoint = 0;
 
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
@@ -115,14 +117,54 @@ void Task_Read_LIDAR(void *argument)
 		uint16_t distance = (frame[1] << 8) + frame[0];
 		uint16_t strength = (frame[3] << 8) + frame[2];  
 		
-		LIDAR_ground_distance = distance * 10;
+		LIDAR_ground_distance = distance * 10;																																					// Convert cm to mm
 		LIDAR_signal_strength = strength;
 		
-		constained_ground_distance = constrain(LIDAR_ground_distance, 300, 1500);
-		Altitude_PID.Input = (float)constained_ground_distance;
+		Altitude_PID.Input = (float)constrain(LIDAR_ground_distance, 300, 2000);
 		osDelay(5);			
 	}
 }	
+
+//##################################################################################################################
+//------------------------------------------------------------------------------------------------------------------
+//##################################################################################################################
+void Task_IV(void *argument) 
+{ 
+	// This Task reads the ADC which is connected to the PDB to measure current from the battery and voltage.
+
+	V_Avg.Filter_Size = 20;
+	I_Avg.Filter_Size = 20;
+	Charge = 0;
+	
+	//Enable ADC1 reset calibaration register
+   ADC_ResetCalibration(ADC1);
+   while (ADC_GetResetCalibrationStatus(ADC1)); 																																		//Check the end of ADC1 reset calibration register
+
+   //Start ADC1 calibaration
+   ADC_StartCalibration(ADC1);
+   while (ADC_GetCalibrationStatus(ADC1)); 																																					//Check the end of ADC1 calibration
+
+	while(1) 
+	{	
+		osDelay(100);	
+		
+		ADC_RegularChannelConfig(ADC1, 8, 1, ADC_SampleTime_28Cycles5);
+		ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+		while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+		uint32_t V = ADC_GetConversionValue(ADC1) * 4468;  																															// 4.468mv per count (There's 10Kohm | 2.2Kohm resistor divider)
+		V /= 1000;		
+		
+		ADC_RegularChannelConfig(ADC1, 9, 1, ADC_SampleTime_28Cycles5);
+		ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+		while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+		uint32_t I = ADC_GetConversionValue(ADC1) * 8057;																																// No resistor divider on the I sensing
+		I /= 472;																																																		  	// 23.6mv/A 
+		
+		// Average update globals
+		Voltage = Average(&V_Avg, V);
+		Current = Average(&I_Avg, I) * 2;																																								// Undoes the I /= 472 rather than 236 above which allows us to 
+	}																																																									// measure currents up to 65 Amps with 16bit variables since Average()
+}																																																										// takes uint16_t variables as input for speed.
 
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
@@ -134,6 +176,15 @@ void Task_Read_Px4Flow(void *argument)
 	{	
 		osDelay(50);	
 		update_integral(&Px4Flow_iframe);
+		
+		X_Velocity = Px4Flow_iframe.pixel_flow_x_integral;
+		Y_Velocity = Px4Flow_iframe.pixel_flow_y_integral;
+		
+		X_Position += Px4Flow_iframe.pixel_flow_x_integral;
+		Y_Position += Px4Flow_iframe.pixel_flow_y_integral;
+		
+		X_PID.Input = ((float)X_Velocity) / 100.0;
+		Y_PID.Input = ((float)Y_Velocity) / 100.0;
 	}
 }
 
@@ -175,6 +226,8 @@ void Task_Ctrl_Mode(void *argument)
 			SetMode(&Altitude_PID, AUTOMATIC);
 			SetMode(&X_PID, MANUAL);
 			SetMode(&Y_PID, MANUAL);
+			X_PID.outputSum = 0;
+			Y_PID.outputSum = 0;
 		}		
 		else
 		{
@@ -198,17 +251,23 @@ void Task_Telemetry(void *argument)
 	
 	while(1) 
 	{
-		osDelay(50);
+		osDelay(40);
 		UART_flush_TX(UART1);
 		   
 		// ------------------- Transmit info for debugging purposes:
-		UART_putnum((int32_t)Altitude_PID.Input, UART1); 							UART_putstr(",", UART1);												
-//  UART_putnum(Px4Flow_iframe.sonar_ground_distance, UART1); 		UART_putstr(",", UART1);
-//	UART_putnum((int32_t)Altitude_PID.Setpoint); 									UART_putstr(",", UART1);															
-//	UART_putnum((int32_t)Altitude_PID.Output); 						  			UART_putstr(",", UART1);
-//  UART_putnum(Altitude_PID_Output_Avg, UART1); 									UART_putstr(",", UART1);	  		
-		UART_putnum(Px4Flow_iframe.pixel_flow_x_integral, UART1);			UART_putstr(",", UART1);
-		UART_putnumln(Px4Flow_iframe.pixel_flow_y_integral, UART1);
+		UART_putnum((int32_t)Altitude_PID.Input, UART1); 							
+		UART_putstr(",", UART1);
+		osDelay(5);
+		
+		UART_putnum((int32_t)Charge, UART1); 													
+		UART_putstr(",", UART1);
+		osDelay(5);
+		
+		UART_putnum(Current, UART1);																	
+		UART_putstr(",", UART1);
+		osDelay(5);
+		
+		UART_putnumln(Voltage, UART1);
 		
 		// ------------------- Receive info for PID tuning etc:
 		if(UART_available(UART1))																																														
@@ -259,31 +318,44 @@ void Task_Telemetry(void *argument)
 //##################################################################################################################
 void Task_PID(void *argument) 
 {		
-	// This task runs frequently. It configures PIDs and adjusts setpoints. -> This could be moved and the while loop done as a periodic fnx
+	// This task runs frequently. It configures PIDs and adjusts setpoints.
 	PID(&Altitude_PID, 0.020, 0.004, 0.040, P_ON_E, DIRECT);
 	SetSampleTime(&Altitude_PID, ALTITUDE_PID_SAMPLE_T);
 	SetOutputLimits(&Altitude_PID, -150.0, 150.0);
 	Altitude_PID.Setpoint = 800.0;																																										// Default setpoint (mm)
 
-	PID(&X_PID, 0.010, 0.000, 0.020, P_ON_E, DIRECT);
+	PID(&X_PID, 0.100, 0.005, 0.040, P_ON_E, DIRECT);
 	SetSampleTime(&X_PID, X_PID_SAMPLE_T);
 	SetOutputLimits(&X_PID, -50.0, 50.0);
-	X_PID.Setpoint = 0.0;
+	X_PID.Setpoint = (float)X_Setpoint;															// These will need to be updated constantly based on RPi3 data!!																									
 	
-	PID(&Y_PID, 0.010, 0.000, 0.020, P_ON_E, DIRECT);
+	PID(&Y_PID, 0.100, 0.005, 0.040, P_ON_E, DIRECT);
 	SetSampleTime(&Y_PID, Y_PID_SAMPLE_T);
 	SetOutputLimits(&Y_PID, -50.0, 50.0);
-	Y_PID.Setpoint = 0.0;
+	Y_PID.Setpoint = (float)Y_Setpoint;
+	
+	uint16_t threshold_count = 0;
 	
 	while(1) 
 	{		
 		osDelay(100);
 		
-		if(PPM_In[THROTTLE_CH] < 1100)	{																																								// Avoid PID windup if we're sat on the floor
-			Altitude_PID.outputSum = 0;
-			X_PID.outputSum = 0;
-			Y_PID.outputSum = 0;
-		}																		
+		if(PPM_In[THROTTLE_CH] < 1100)	{																																								// Avoid PID windup if we're sat on the floor with a low throttle value
+			threshold_count++;																																														// (>1 second) We don't want a spurious midflight reading causing havoc
+			
+			if(threshold_count > 10)	{
+				Altitude_PID.outputSum = 0;
+				X_PID.outputSum = 0;
+				Y_PID.outputSum = 0;
+				
+				X_Position = 0;
+				Y_Position = 0;
+			}
+		}
+		
+		else	{
+			threshold_count = 0;
+		}
 	}
 }
 
@@ -341,12 +413,21 @@ static void Periodic_Y_PID (void *argument)
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
 //##################################################################################################################
+static void Periodic_Charge_Calc (void *argument) 
+{	
+	Charge += (float)Current / 18000.0;																																								// Runs 5 times per second -> 18000 times per hour
+}																																																										// So 1mAh current for 1 hour (ie. 18000 iterations) would give 1mAh.
+
+//##################################################################################################################
+//------------------------------------------------------------------------------------------------------------------
+//##################################################################################################################
 void app_main (void *argument) 
 {	
 	osDelay(5000);
 	
 	// Start some tasks
-	osThreadNew(Task_Alive_LED, 		NULL, NULL);		
+	osThreadNew(Task_Alive_LED, 		NULL, NULL);
+  osThreadNew(Task_IV, 						NULL, NULL);	
 	osThreadNew(Task_Ctrl_Mode, 		NULL, NULL);
 	osThreadNew(Task_Pass_Through, 	NULL, NULL);
 	osThreadNew(Task_Telemetry, 		NULL, NULL);
@@ -355,16 +436,19 @@ void app_main (void *argument)
 	osThreadNew(Task_PID, 					NULL, NULL);
 
 	// Start periodic timers to handle the PIDs for Altitude hold, etc
-	osTimerId_t Periodic_Altitude_PID_id, Periodic_X_PID_id, Periodic_Y_PID_id;
+	osTimerId_t Periodic_Altitude_PID_id, Periodic_X_PID_id, Periodic_Y_PID_id, Periodic_Charge_id;
 	
 	Periodic_Altitude_PID_id = osTimerNew(Periodic_Altitude_PID, osTimerPeriodic, NULL, NULL);
 	osTimerStart(Periodic_Altitude_PID_id, ALTITUDE_PID_SAMPLE_T);		
 
-//	Periodic_X_PID_id = osTimerNew(Periodic_X_PID, osTimerPeriodic, NULL, NULL);
-//	osTimerStart(Periodic_X_PID_id, X_PID_SAMPLE_T);	
+	Periodic_X_PID_id = osTimerNew(Periodic_X_PID, osTimerPeriodic, NULL, NULL);
+	osTimerStart(Periodic_X_PID_id, X_PID_SAMPLE_T);	
 
-//	Periodic_Y_PID_id = osTimerNew(Periodic_Y_PID, osTimerPeriodic, NULL, NULL);
-//	osTimerStart(Periodic_Y_PID_id, Y_PID_SAMPLE_T);		
+	Periodic_Y_PID_id = osTimerNew(Periodic_Y_PID, osTimerPeriodic, NULL, NULL);
+	osTimerStart(Periodic_Y_PID_id, Y_PID_SAMPLE_T);		
+	
+	Periodic_Charge_id = osTimerNew(Periodic_Charge_Calc, osTimerPeriodic, NULL, NULL);
+	osTimerStart(Periodic_Charge_id, CHARGE_SAMPLE_T);
 	
 	// This forms the idle task
 	osDelay(osWaitForever);
@@ -378,6 +462,7 @@ int main(void)
 {	
 	// Initialise timers and interrupts
 	gpio_init();																					// Initialises GPIO for blinked LED
+	ADC_init();																						// Initialises ADC for reading current and voltage of battery
 	ppm_init();																						// Initialises for CPPM input
 	TIM3_Init();																					// Initialises a 1us counter for CPPM output timings. Generates compare interrupts
 	USART1_Init();																				// Initialises UART1 functions, FIFO & interrupts for serial tx through telementry
@@ -386,8 +471,8 @@ int main(void)
 
 	// Initialise variables
 	Altitude_Avg.Filter_Size = 20;
-	X_Avg.Filter_Size = 10;
-	Y_Avg.Filter_Size = 10;
+	X_Avg.Filter_Size = 5;
+	Y_Avg.Filter_Size = 5;
 	
 	// OS System Initialization
 	SystemCoreClockUpdate();

@@ -22,6 +22,36 @@ void gpio_init()
 //##################################################################################################################
 //------------------------------------------------------------------------------------------------------------------
 //##################################################################################################################
+void ADC_init() 
+{
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE); 
+
+	GPIO_InitTypeDef GPIO_InitStructure;	
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;      
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
+	GPIO_Init(GPIOB, &GPIO_InitStructure);	
+	
+	RCC_ADCCLKConfig(RCC_PCLK2_Div6);																																									// ADC needs feeding with 600khz - 14mhz. 72mhz system clock / 6 = 12mhz
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
+	ADC_DeInit(ADC1);
+	
+	ADC_InitTypeDef  ADC_InitStructure;
+  ADC_InitStructure.ADC_Mode = ADC_Mode_Independent;
+  ADC_InitStructure.ADC_ScanConvMode = DISABLE;
+  ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;
+  ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+  ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
+  ADC_InitStructure.ADC_NbrOfChannel = 1;
+  ADC_Init(ADC1, &ADC_InitStructure);
+	
+  /* Enable ADC1 */
+  ADC_Cmd(ADC1, ENABLE);
+}
+
+//##################################################################################################################
+//------------------------------------------------------------------------------------------------------------------
+//##################################################################################################################
 void ppm_init() 
 {
 		GPIO_InitTypeDef gpio_cfg;	
